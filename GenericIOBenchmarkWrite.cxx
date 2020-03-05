@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
   srand48(TNp + commRank);
 
   // Add a 2% variance to make things a bit more realistic.
-  Np = double(Np)*(1.0 + (drand48() - 0.5)*0.02);
+  //Np = double(Np)*(1.0 + (drand48() - 0.5)*0.02);
 
   uint64_t glb_sum;
 

@@ -85,6 +85,9 @@ char nc[] = { 0x1b, '[', '0', ';', '3', '9', 'm', 0 };
 
 // COMPOUND TYPE METHOD
 #ifdef GENERICIO_HAVE_HDF
+
+#define HDF5_MD
+
 //#define HDF5_DERV
 #ifdef HDF5_DERV
 typedef struct {
@@ -104,8 +107,15 @@ hid_t Hfiletype;
 
 uint64_t CRC_values[9];
 char FORMAT_TYPE[] = "HDF5_DERV";
+
+#else
+
+#if defined(HDF5_MD)
+char FORMAT_TYPE[] = "HDF5_MD";
 #else
 char FORMAT_TYPE[] = "HDF5";
+#endif
+
 #endif
 
 #else
@@ -410,7 +420,7 @@ void GenericFileIO_HDF::write(const void *buf, size_t count, off_t offset,
 }
 
 void GenericFileIO_HDF::write_hdf_internal(const void *buf, size_t count, uint64_t offset,
-				  const std::string &D, hid_t dtype, hsize_t numel, hsize_t chunk_size,const void *CRC, hid_t gid, uint64_t Totnumel, size_t i) {
+				  const std::string &D, hid_t dtype, hsize_t numel, hsize_t chunk_size,const void *CRC, hid_t gid, uint64_t Totnumel, size_t i, hid_t dset_id) {
 
   hid_t sid, dataset,file_dataspace, aid, mem_dataspace, attr, fid, aspace;
   
@@ -463,8 +473,17 @@ void GenericFileIO_HDF::write_hdf_internal(const void *buf, size_t count, uint64
   H5Pclose(dset_creation_plist);
 
 #else  
+
+#if defined(HDF5_MD)
+
+  dataset = dset_id;
+
+#else
+
   if( (dataset = H5Dcreate2(gid, c_str, dtype, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT)) < 0)
     throw runtime_error( "Unable to create HDF5 dataset " );
+
+#endif
 #endif
 
   delete[] c_str;
@@ -951,11 +970,79 @@ void GenericIO::write_hdf() {
   uint64_t Offsets_glb;
 	
   double t1, timer=0.;
+
+
+#ifdef HDF5_MD
+
+  int dcount = Vars.size();
+
+  const char *names[dcount];
+  hid_t loc_ids[dcount];
+  hid_t type_ids[dcount];
+  hid_t space_ids[dcount];
+  hid_t dset_ids[dcount];
+  hid_t dcpl_ids[dcount];
+  H5D_alloc_multi_method_t method;
+
+  if (FileIOType == FileIOHDF) {
+
+    hsize_t md_chunk_dims[1];
+    uint64_t md_max_nelms = 0;
+    hsize_t md_dims[1];
+
+    for (size_t i = 0; i < dcount; ++i) {
+        char *AA = new char[Vars[i].Name.length() + 1];
+        strcpy(AA, Vars[i].Name.c_str());
+        names[i] = AA;
+    }
+
+    md_dims[0] = (hsize_t)TotElem;
+
+    MPI_Allreduce(&NElems, &md_max_nelms, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+    md_chunk_dims[0] = (hsize_t)md_max_nelms;
+
+    for (size_t i = 0; i < dcount; ++i) {
+
+        loc_ids[i] = gid;
+
+        if(Vars[i].Name.compare("id") == 0)
+            type_ids[i] = H5T_NATIVE_LONG;
+        else if(Vars[i].Name.compare("mask") == 0)
+            type_ids[i] = H5T_NATIVE_UINT16;
+        else 
+            type_ids[i] = H5T_NATIVE_FLOAT;
+
+        if( (space_ids[i] = H5Screate_simple (1, md_dims, NULL)) < 0)
+            throw runtime_error( "Unable to create HDF5 space: " );
+
+        dcpl_ids[i] = H5Pcreate(H5P_DATASET_CREATE);
+        H5Pset_layout(dcpl_ids[i], H5D_CHUNKED);
+        H5Pset_chunk(dcpl_ids[i], 1, md_chunk_dims);
+        H5Pset_alloc_time(dcpl_ids[i], H5D_ALLOC_TIME_MULTI);
+
+    }
+
+    method =  H5D_ALLOC_MULTI_ROUND_ROBIN;
+
+    if(H5Dcreate_multi(dcount, loc_ids, names, type_ids, space_ids, 
+               H5P_DEFAULT, dcpl_ids, H5P_DEFAULT, method, NULL, dset_ids) < 0)
+        throw runtime_error( "Unable to create HDF5 dataset " );
+
+    for (size_t i = 0; i < dcount; ++i) {
+        H5Sclose(space_ids[i]);
+        H5Pclose(dcpl_ids[i]);
+    }
+
+}
+
+#endif
+
   for (size_t i = 0; i < Vars.size(); ++i) {
 
     uint64_t WriteSize = NElems*Vars[i].Size;
     void *Data = Vars[i].Data;
     uint64_t CRC = 0;
+    hid_t dset_id = H5I_INVALID_HID;
 
     if (FileIOType == FileIOHDF) {
 	  hid_t dtype;
@@ -1059,8 +1146,12 @@ void GenericIO::write_hdf() {
 	  }else {
 	    dtype = H5T_NATIVE_FLOAT;
 	  }
+
+#ifdef HDF5_MD
+      dset_id = dset_ids[i];
+#endif
 	
-	  gfio_hdf->write_hdf_internal(Data, WriteSize, Offsets , Vars[i].Name, dtype, NElems, chunk_size,&CRC, gid, TotElem, i);
+	  gfio_hdf->write_hdf_internal(Data, WriteSize, Offsets , Vars[i].Name, dtype, NElems, chunk_size,&CRC, gid, TotElem, i, dset_id);
 #endif
     }
   }
